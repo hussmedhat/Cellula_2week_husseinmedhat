@@ -1,0 +1,12 @@
+# API Server
+fastapi==0.139.2
+uvicorn==0.51.0
+python-multipart==0.0.32
+
+# Deep Learning Core
+torch==2.13.0
+transformers==4.49.0
+Pillow==12.3.0
+
+# Data Management
+pandas==3.0.4

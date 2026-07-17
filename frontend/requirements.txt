@@ -1,0 +1,5 @@
+# User Interface
+streamlit==1.59.2
+
+# Network Communication
+requests==2.34.2
