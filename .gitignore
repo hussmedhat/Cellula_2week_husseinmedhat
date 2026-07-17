@@ -1,0 +1,17 @@
+# 1. Python Compilation Cache
+__pycache__/
+*.pyc
+
+# 2. Security & API Keys (STRICTLY HIDDEN)
+.env
+secrets.json
+config_local.py
+
+# 3. Local Database & Logs
+backend/toxic_database.csv
+*.csv
+*.log
+
+# 4. Deep Learning Weights & Tokenizer
+backend/weights/bilstm_model.pth
+backend/weights/bert_tokenizer/
