@@ -102,131 +102,160 @@ def render_score_bar(label_key: str, score: float):
     )
 
 
-def call_backend(image_bytes: bytes, filename: str, content_type: str):
-    files = {"file": (filename, image_bytes, content_type)}
-    return requests.post(API_URL, files=files, timeout=60)
+def call_backend(image_bytes, filename, content_type, caption_text: str):
+    """image_bytes may be None (text-only request). caption_text may be
+    empty string (image-only request). At least one must be non-empty --
+    enforced by the UI before this is ever called."""
+    data = {"caption": caption_text} if caption_text else {}
+
+    if image_bytes is not None:
+        files = {"file": (filename, image_bytes, content_type)}
+        return requests.post(API_URL, files=files, data=data, timeout=60)
+    else:
+        return requests.post(API_URL, data=data, timeout=60)
 
 
 # ============================================================
 # UI
 # ============================================================
 st.title("🛡️ Content Safety Guardrail")
-st.caption("Upload an image to analyze both its visual content and linguistic context for potential policy violations.")
+st.caption("Upload an image, enter a caption/comment, or both, to analyze for potential policy violations.")
 
-uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+uploaded_file = st.file_uploader("Choose an image (optional)", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
+image = None
 if uploaded_file is not None:
-    col_img, col_action = st.columns([2, 1])
-    with col_img:
-        image = Image.open(uploaded_file)
-        st.image(image, width='stretch')
+    image = Image.open(uploaded_file)
+    st.image(image, width='stretch')
 
-    analyze_clicked = st.button("🔍 Generate caption & classify", type="primary", width='stretch')
+user_caption = st.text_area(
+    "Or enter a caption / comment to classify (optional)",
+    height=90,
+    placeholder="Type a comment or caption here...",
+    label_visibility="collapsed",
+)
 
-    if analyze_clicked:
-        with st.spinner("Analyzing image content..."):
-            try:
-                img_byte_arr = io.BytesIO()
-                image.save(img_byte_arr, format=image.format if image.format else "PNG")
-                img_byte_arr = img_byte_arr.getvalue()
+has_input = uploaded_file is not None or bool(user_caption.strip())
 
-                response = call_backend(img_byte_arr, uploaded_file.name, uploaded_file.type)
+analyze_clicked = st.button("🔍 Classify", type="primary", width='stretch', disabled=not has_input)
+if not has_input:
+    st.caption("Upload an image, enter a caption, or both, to enable classification.")
 
-            except requests.exceptions.ConnectionError:
-                st.error("❌ Can't reach the backend. Is the FastAPI server running on `localhost:8000`?")
-                st.stop()
-            except requests.exceptions.Timeout:
-                st.error("⏱️ Request timed out. The model may be overloaded — try again.")
-                st.stop()
-            except Exception as e:
-                st.error(f"❌ Unexpected error contacting the server: {e}")
-                st.stop()
+if analyze_clicked:
+    with st.spinner("Analyzing content..."):
+        try:
+            img_byte_arr = None
+            filename = None
+            content_type = None
 
-        if response.status_code != 200:
-            st.error(f"Server returned an error ({response.status_code}): {response.text}")
+            if uploaded_file is not None:
+                img_buf = io.BytesIO()
+                image.save(img_buf, format=image.format if image.format else "PNG")
+                img_byte_arr = img_buf.getvalue()
+                filename = uploaded_file.name
+                content_type = uploaded_file.type
+
+            response = call_backend(img_byte_arr, filename, content_type, user_caption.strip())
+
+        except requests.exceptions.ConnectionError:
+            st.error("❌ Can't reach the backend. Is the FastAPI server running on `localhost:8000`?")
+            st.stop()
+        except requests.exceptions.Timeout:
+            st.error("⏱️ Request timed out. The model may be overloaded — try again.")
+            st.stop()
+        except Exception as e:
+            st.error(f"❌ Unexpected error contacting the server: {e}")
             st.stop()
 
-        data = response.json()
-        status = data.get("status", "success")
-        description = data.get("description", "")
-        fused_scores = data.get("toxicity_scores", {}) or {}
-        raw_clip_scores = data.get("raw_clip_scores", {}) or {}
-        raw_bert_scores = data.get("raw_bert_scores", {})  # may be None on partial_failure
+    if response.status_code != 200:
+        st.error(f"Server returned an error ({response.status_code}): {response.text}")
+        st.stop()
 
-        st.divider()
+    data = response.json()
+    status = data.get("status", "success")
+    description = data.get("description", "")
+    fused_scores = data.get("toxicity_scores", {}) or {}
+    raw_clip_scores = data.get("raw_clip_scores", {}) or {}
+    raw_bert_scores = data.get("raw_bert_scores")  # may be None on partial_failure
 
-        # --------------------------------------------------
-        # Caption
-        # --------------------------------------------------
-        st.markdown(f'<div class="caption-box">📄 {description}</div>', unsafe_allow_html=True)
+    st.divider()
 
-        # --------------------------------------------------
-        # Partial failure banner — caption generation failed upstream
-        # --------------------------------------------------
-        if status == "partial_failure":
-            st.warning(
-                "⚠️ Caption generation failed for this image — the verdict below is based on "
-                "**visual analysis only** (CLIP), without text-based classification. Treat it as "
-                "lower-confidence than a normal result."
-            )
+    # --------------------------------------------------
+    # Caption / analyzed text
+    # --------------------------------------------------
+    st.markdown(f'<div class="caption-box">📄 {description}</div>', unsafe_allow_html=True)
 
-        # --------------------------------------------------
-        # SINGLE SOURCE OF TRUTH: one flagging decision, everything else displays it
-        # --------------------------------------------------
-        triggered_categories = [
-            cat for cat in LABEL_ORDER
-            if fused_scores.get(cat, 0.0) >= VIOLATION_THRESHOLD
-        ]
-        is_flagged = bool(triggered_categories)
+    # --------------------------------------------------
+    # Partial failure banner — caption generation failed upstream
+    # --------------------------------------------------
+    if status == "partial_failure":
+        st.warning(
+            "⚠️ Caption generation failed for this image — the verdict below is based on "
+            "**visual analysis only** (CLIP), without text-based classification. Treat it as "
+            "lower-confidence than a normal result."
+        )
 
-        if is_flagged:
-            pills = "".join(f'<span class="pill pill-flag">{LABEL_DISPLAY[c]}</span>' for c in triggered_categories)
-            st.markdown(
-                f"""
-                <div class="verdict-card verdict-flagged">
-                    <div class="verdict-title">🚨 Flagged for review</div>
-                    <div class="verdict-sub">This image crossed the safety threshold in the following categories:</div>
-                    <div style="margin-top:0.5rem;">{pills}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                """
-                <div class="verdict-card verdict-safe">
-                    <div class="verdict-title">✅ Approved for distribution</div>
-                    <div class="verdict-sub">No category crossed the safety threshold.</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    # --------------------------------------------------
+    # SINGLE SOURCE OF TRUTH: one flagging decision, everything else displays it
+    # --------------------------------------------------
+    triggered_categories = [
+        cat for cat in LABEL_ORDER
+        if fused_scores.get(cat, 0.0) >= VIOLATION_THRESHOLD
+    ]
+    is_flagged = bool(triggered_categories)
 
-        # Supporting evidence line — informational only, does not make its own verdict
-        if raw_clip_scores:
-            top_clip_label = max(raw_clip_scores, key=raw_clip_scores.get)
-            top_clip_score = raw_clip_scores[top_clip_label]
-            st.caption(
-                f"Strongest visual signal: **{LABEL_DISPLAY.get(top_clip_label, top_clip_label)}** "
-                f"({top_clip_score:.2f} raw CLIP confidence)"
-            )
+    if is_flagged:
+        pills = "".join(f'<span class="pill pill-flag">{LABEL_DISPLAY[c]}</span>' for c in triggered_categories)
+        st.markdown(
+            f"""
+            <div class="verdict-card verdict-flagged">
+                <div class="verdict-title">🚨 Flagged for review</div>
+                <div class="verdict-sub">This content crossed the safety threshold in the following categories:</div>
+                <div style="margin-top:0.5rem;">{pills}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="verdict-card verdict-safe">
+                <div class="verdict-title">✅ Approved for distribution</div>
+                <div class="verdict-sub">No category crossed the safety threshold.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        # --------------------------------------------------
-        # Score breakdown
-        # --------------------------------------------------
-        with st.expander("📊 Full probability breakdown", expanded=is_flagged):
-            st.markdown("**Fused multi-modal scores**")
-            for label in LABEL_ORDER:
-                render_score_bar(label, fused_scores.get(label, 0.0))
 
-            st.markdown("&nbsp;", unsafe_allow_html=True)
-            tab1, tab2 = st.tabs(["Raw Text Model (BERT)", "Raw Visual Model (CLIP)"])
-            with tab1:
-                if raw_bert_scores:
-                    st.json(raw_bert_scores)
-                else:
-                    st.info("Not available — caption generation failed for this request.")
-            with tab2:
+    has_clip_signal = raw_clip_scores and any(v is not None for v in raw_clip_scores.values())
+    if has_clip_signal:
+        top_clip_label = max(raw_clip_scores, key=lambda k: raw_clip_scores[k] or 0.0)
+        top_clip_score = raw_clip_scores[top_clip_label]
+        st.caption(
+            f"Strongest visual signal: **{LABEL_DISPLAY.get(top_clip_label, top_clip_label)}** "
+            f"({top_clip_score:.2f} raw CLIP confidence)"
+        )
+
+    # --------------------------------------------------
+    # Score breakdown
+    # --------------------------------------------------
+    with st.expander("📊 Full probability breakdown", expanded=is_flagged):
+        st.markdown("**Fused multi-modal scores**")
+        for label in LABEL_ORDER:
+            render_score_bar(label, fused_scores.get(label, 0.0))
+
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        tab1, tab2 = st.tabs(["Raw Text Model (BERT)", "Raw Visual Model (CLIP)"])
+        with tab1:
+            if raw_bert_scores:
+                st.json(raw_bert_scores)
+            else:
+                st.info("Not available — caption generation failed for this request.")
+        with tab2:
+            if has_clip_signal:
                 st.json(raw_clip_scores)
+            else:
+                st.info("Not available — no image was provided for this request.")
 else:
-    st.info("👆 Upload an image to get started.")
+    st.info("👆 Upload an image, enter a caption, or both, to get started.")
