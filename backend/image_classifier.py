@@ -11,12 +11,7 @@ print("Loading CLIP model...")
 model, preprocess = clip.load("ViT-B/32", device=device)
 model.eval()
 
-# 3. Each label gets a (positive, negative) prompt pair instead of a single
-# prompt. This is the fix: comparing "toxic" only against "not toxic" keeps
-# labels independent, instead of softmaxing across all 6 unrelated concepts
-# (which forced them to compete for a shared probability budget — a threat
-# image would mechanically suppress obscene/insult/etc. scores even if both
-# were true).
+# kol label leeh positive prompt w negative prompts 3ashan y3ml classification 3ala el image sawa2 heya fe3lan true wala negative
 CLIP_PROMPT_MAPPING = {
     "toxic": (
         "a scene showing danger signs, hazard warnings, radiation or biohazard symbols, or toxic/contaminated material",
@@ -47,7 +42,6 @@ CLIP_PROMPT_MAPPING = {
 LABELS = list(CLIP_PROMPT_MAPPING.keys())
 
 # Encode positives normally, but average several negative anchors per label
-# instead of relying on one under-specified negative phrase.
 pos_prompts = [CLIP_PROMPT_MAPPING[label][0] for label in LABELS]
 pos_tokens = clip.tokenize(pos_prompts).to(device)
 
