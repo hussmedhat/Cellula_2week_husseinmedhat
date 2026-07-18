@@ -1,31 +1,42 @@
-import io
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
+import io
 
-class ImageCaptioner:
+class CaptionEngine:
     def __init__(self):
-        # ba5tar el model 
-        self.model_id = "Salesforce/blip-image-captioning-base"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Loading Moondream2 model on {self.device}...")
         
-        # baload el processor 
-        self.processor = BlipProcessor.from_pretrained(self.model_id)
+        model_id = "vikhyatk/moondream2"
         
-        # baload el model
-        self.model = BlipForConditionalGeneration.from_pretrained(self.model_id)
+        # Load the tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # Load the lightweight model
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_id, 
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        ).to(self.device)
+        
+        self.model.eval()
 
     def generate_caption(self, image_bytes: bytes) -> str:
-        # 1. ba7awel el bytes le image 3ashan a2dar astakhdemha ma3a el processor
-        image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        
-        # 2. Ba process el soora 3ashan atala3 tensors
-        inputs = self.processor(image, return_tensors="pt")
-        
-        # 3. hena ba3mel generation lel tokens elly hayet7awel le caption
-        out = self.model.generate(**inputs)
-        
-        # 4. hena 3amalt decode 3ashan atala3 el caption
-        caption = self.processor.decode(out[0], skip_special_tokens=True)
-        
-        return caption
+        try:
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            
+            prompt = "Describe exactly what is happening in this image in one or two neutral, factual sentences."
+            
+            with torch.no_grad():
+                enc_image = self.model.encode_image(image)
+                caption = self.model.answer_question(enc_image, prompt, self.tokenizer)
+            
+            return caption.strip()
+            
+        except Exception as e:
+            print(f"Error in Moondream2 generation: {e}")
+            return "failed to generate caption"
 
-caption_engine = ImageCaptioner()
+# Initialize the engine so main.py can use it seamlessly
+caption_engine = CaptionEngine()
