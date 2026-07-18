@@ -9,6 +9,7 @@ from transformers import BertTokenizer
 from model_arch import BertBiLSTM
 from imagecaption import caption_engine
 from image_classifier import get_clip_scores
+from db_logger import log_prediction
 
 app = FastAPI(title="Toxicity Classification API")
 
@@ -65,12 +66,6 @@ async def predict(file: UploadFile = File(...)):
         # Read image bytes once to be used by both Moondream2 and CLIP
         image_bytes = await file.read()
 
-        # ---------------------------------------------------------
-        # PHASE A: Moondream (captioning) and CLIP (visual scoring) don't
-        # depend on each other's output, so run them concurrently instead
-        # of back-to-back. Both are sync/blocking calls, so we offload
-        # them to threads rather than await-ing them serially.
-        # ---------------------------------------------------------
         description, clip_scores = await asyncio.gather(
             asyncio.to_thread(caption_engine.generate_caption, image_bytes),
             asyncio.to_thread(get_clip_scores, image_bytes),
@@ -84,6 +79,11 @@ async def predict(file: UploadFile = File(...)):
         if description == "failed to generate caption":
             bert_scores = {label: None for label in LABELS}
             fused_scores = clip_scores  # fall back to CLIP-only signal
+
+            await asyncio.to_thread(
+                log_prediction, description, bert_scores, clip_scores, fused_scores, "partial_failure"
+            )
+
             return {
                 "status": "partial_failure",
                 "description": description,
@@ -118,10 +118,6 @@ async def predict(file: UploadFile = File(...)):
         # ---------------------------------------------------------
         # PHASE C: Multi-Modal Fusion (Per-Label Confidence-Weighted)
         # ---------------------------------------------------------
-        # No keyword scanning of the caption text. Each label's blend is
-        # decided independently, based on whether CLIP is actually
-        # confident about THAT label -- not on whether some unrelated
-        # word appeared in the description.
         fused_scores = {}
         for label in LABELS:
             clip_score = clip_scores[label]
@@ -134,6 +130,10 @@ async def predict(file: UploadFile = File(...)):
             w_bert = 1 - w_clip
 
             fused_scores[label] = (bert_score * w_bert) + (clip_score * w_clip)
+
+        await asyncio.to_thread(
+            log_prediction, description, bert_scores, clip_scores, fused_scores, "success"
+        )
 
         return {
             "status": "success",
