@@ -1,12 +1,15 @@
 import streamlit as st
 import requests
+import pandas as pd
 from PIL import Image
 import io
 
 # ============================================================
 # CONFIG
 # ============================================================
-API_URL = "http://localhost:8000/predict"
+API_BASE = "http://localhost:8000"
+API_URL = f"{API_BASE}/predict"
+HISTORY_URL = f"{API_BASE}/history"
 VIOLATION_THRESHOLD = 0.35  # single source of truth for "is this flagged"
 
 LABEL_ORDER = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
@@ -26,8 +29,9 @@ LABEL_ICON = {
     "insult": "💢",
     "identity_hate": "✋",
 }
+SOURCE_ICON = {"image": "🖼️", "caption": "📝", "both": "🖼️📝"}
 
-st.set_page_config(page_title="Content Safety Guardrail", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="Content Safety Guardrail", page_icon="🛡️", layout="wide")
 
 # ============================================================
 # STYLE
@@ -50,22 +54,30 @@ st.markdown(
         inset: 0;
         z-index: 0;
         background:
-            radial-gradient(circle at 12% 8%, rgba(99,102,241,0.16), transparent 38%),
-            radial-gradient(circle at 88% 15%, rgba(236,72,153,0.13), transparent 42%),
-            radial-gradient(circle at 25% 92%, rgba(56,189,248,0.10), transparent 40%),
-            radial-gradient(circle at 92% 85%, rgba(168,85,247,0.12), transparent 40%);
-        animation: drift 18s ease-in-out infinite alternate;
+            radial-gradient(circle at 12% 8%, rgba(99,102,241,0.18), transparent 38%),
+            radial-gradient(circle at 88% 15%, rgba(236,72,153,0.15), transparent 42%),
+            radial-gradient(circle at 25% 92%, rgba(56,189,248,0.12), transparent 40%),
+            radial-gradient(circle at 92% 85%, rgba(168,85,247,0.14), transparent 40%),
+            radial-gradient(circle at 50% 50%, rgba(52,211,153,0.05), transparent 60%);
+        animation: drift 16s ease-in-out infinite alternate;
         pointer-events: none;
     }
     @keyframes drift {
         0%   { transform: translate(0px, 0px) scale(1); }
-        100% { transform: translate(-20px, 15px) scale(1.05); }
+        100% { transform: translate(-25px, 18px) scale(1.07); }
     }
 
-    .block-container { position: relative; z-index: 1; padding-top: 2rem; }
+    .block-container { position: relative; z-index: 1; padding-top: 1.8rem; }
+
+    /* ---------- Sidebar ---------- */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, rgba(15,15,22,0.97), rgba(10,10,15,0.99));
+        border-right: 1px solid rgba(255,255,255,0.07);
+    }
+    section[data-testid="stSidebar"] .block-container { padding-top: 1.5rem; }
 
     /* ---------- Hero ---------- */
-    .hero { text-align: center; padding: 1.25rem 0 0.75rem 0; animation: fadeSlideDown 0.7s ease; }
+    .hero { text-align: center; padding: 0.5rem 0 0.75rem 0; animation: fadeSlideDown 0.7s ease; }
     .hero-badge {
         display: inline-block;
         font-size: 0.72rem;
@@ -78,18 +90,23 @@ st.markdown(
         padding: 0.3rem 0.9rem;
         border-radius: 999px;
         margin-bottom: 0.9rem;
+        animation: badgeGlow 3s ease-in-out infinite;
+    }
+    @keyframes badgeGlow {
+        0%, 100% { box-shadow: 0 0 0 rgba(167,139,250,0); }
+        50% { box-shadow: 0 0 14px rgba(167,139,250,0.35); }
     }
     .hero-title {
-        font-size: 2.5rem;
+        font-size: 2.6rem;
         font-weight: 900;
         letter-spacing: -0.03em;
         line-height: 1.1;
-        background: linear-gradient(100deg, #a5b4fc 0%, #d8b4fe 35%, #f9a8d4 65%, #93c5fd 100%);
+        background: linear-gradient(100deg, #a5b4fc 0%, #d8b4fe 30%, #f9a8d4 55%, #93c5fd 80%, #a5b4fc 100%);
         background-size: 200% auto;
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
-        animation: shimmer 6s linear infinite;
+        animation: shimmer 7s linear infinite;
         margin-bottom: 0.4rem;
     }
     @keyframes shimmer {
@@ -98,14 +115,9 @@ st.markdown(
     }
     .hero-sub { color: rgba(255,255,255,0.5); font-size: 1rem; font-weight: 400; }
 
-    @keyframes fadeSlideDown {
-        from { opacity: 0; transform: translateY(-14px); }
-        to   { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes fadeSlideUp {
-        from { opacity: 0; transform: translateY(14px); }
-        to   { opacity: 1; transform: translateY(0); }
-    }
+    @keyframes fadeSlideDown { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeSlideUp   { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes popIn         { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
 
     /* ---------- Glass panel ---------- */
     .glass-panel {
@@ -203,107 +215,86 @@ st.markdown(
     }
 
     /* ---------- Score bars ---------- */
-    .score-row {
-        display: flex;
-        align-items: center;
-        gap: 0.85rem;
-        margin: 0.7rem 0;
-        animation: fadeSlideUp 0.4s ease both;
-    }
+    .score-row { display: flex; align-items: center; gap: 0.85rem; margin: 0.7rem 0; animation: fadeSlideUp 0.4s ease both; }
     .score-icon {
-        width: 30px;
-        height: 30px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1rem;
-        background: rgba(255,255,255,0.05);
-        border-radius: 9px;
-        border: 1px solid rgba(255,255,255,0.06);
+        width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+        font-size: 1rem; background: rgba(255,255,255,0.05); border-radius: 9px; border: 1px solid rgba(255,255,255,0.06);
     }
     .score-label { width: 118px; font-size: 0.87rem; font-weight: 600; color: rgba(255,255,255,0.85); }
-    .score-track {
-        flex: 1;
-        background: rgba(255,255,255,0.06);
-        border-radius: 10px;
-        height: 13px;
-        overflow: hidden;
-        position: relative;
-    }
-    .score-fill {
-        height: 100%;
-        border-radius: 10px;
-        transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
-        position: relative;
-    }
+    .score-track { flex: 1; background: rgba(255,255,255,0.06); border-radius: 10px; height: 13px; overflow: hidden; position: relative; }
+    .score-fill { height: 100%; border-radius: 10px; transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1); position: relative; }
     .score-fill::after {
-        content: "";
-        position: absolute;
-        inset: 0;
+        content: ""; position: absolute; inset: 0;
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
         animation: sheen 2.4s ease-in-out infinite;
     }
-    @keyframes sheen {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(100%); }
-    }
-    .score-pct {
-        width: 56px;
-        text-align: right;
-        font-size: 0.85rem;
-        font-family: 'JetBrains Mono', monospace;
-        font-weight: 600;
-        opacity: 0.9;
-    }
+    @keyframes sheen { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    .score-pct { width: 56px; text-align: right; font-size: 0.85rem; font-family: 'JetBrains Mono', monospace; font-weight: 600; opacity: 0.9; }
 
     .pill {
-        display: inline-block;
-        padding: 0.32rem 0.85rem;
-        border-radius: 999px;
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin: 0.15rem 0.35rem 0.15rem 0;
-        background: rgba(239,68,68,0.18);
-        color: #fca5a5;
-        border: 1px solid rgba(239,68,68,0.4);
+        display: inline-block; padding: 0.32rem 0.85rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700;
+        margin: 0.15rem 0.35rem 0.15rem 0; background: rgba(239,68,68,0.18); color: #fca5a5; border: 1px solid rgba(239,68,68,0.4);
     }
 
     .signal-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4rem;
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 999px;
-        padding: 0.35rem 0.9rem;
-        font-size: 0.82rem;
-        color: rgba(255,255,255,0.75);
-        margin-top: 0.3rem;
+        display: inline-flex; align-items: center; gap: 0.4rem; background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 0.35rem 0.9rem;
+        font-size: 0.82rem; color: rgba(255,255,255,0.75); margin-top: 0.3rem;
     }
 
     /* ---------- Tabs ---------- */
     .stTabs [data-baseweb="tab-list"] { gap: 0.4rem; background: transparent; }
     .stTabs [data-baseweb="tab"] {
-        background: rgba(255,255,255,0.03);
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.07);
-        padding: 0.4rem 1rem;
-        color: rgba(255,255,255,0.6);
+        background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.07);
+        padding: 0.4rem 1rem; color: rgba(255,255,255,0.6);
     }
     .stTabs [aria-selected="true"] {
-        background: rgba(167,139,250,0.15) !important;
-        border-color: rgba(167,139,250,0.4) !important;
-        color: #e9d5ff !important;
+        background: rgba(167,139,250,0.15) !important; border-color: rgba(167,139,250,0.4) !important; color: #e9d5ff !important;
+    }
+
+    /* ---------- Sidebar log viewer ---------- */
+    .sidebar-title {
+        font-size: 1.1rem; font-weight: 800; letter-spacing: -0.01em;
+        background: linear-gradient(100deg, #c4b5fd, #f9a8d4);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        margin-bottom: 0.9rem;
+    }
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-bottom: 1rem; }
+    .metric-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 0.8rem 0.9rem;
+        animation: popIn 0.4s ease both;
+    }
+    .metric-value { font-size: 1.5rem; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
+    .metric-label { font-size: 0.72rem; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.15rem; }
+    .metric-flagged .metric-value { color: #fca5a5; }
+    .metric-safe .metric-value { color: #86efac; }
+    .metric-total .metric-value { color: #c4b5fd; }
+    .metric-rate .metric-value { color: #fcd34d; }
+
+    .log-row {
+        background: rgba(255,255,255,0.025);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        margin-bottom: 0.4rem;
+        font-size: 0.78rem;
+        animation: fadeSlideUp 0.3s ease both;
+    }
+    .log-row-flagged { border-left: 3px solid #f87171; }
+    .log-row-safe { border-left: 3px solid #4ade80; }
+    .log-time { color: rgba(255,255,255,0.4); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; }
+    .log-tags { margin-top: 0.25rem; }
+    .log-tag {
+        display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.5rem;
+        border-radius: 999px; margin: 0.1rem 0.2rem 0 0; background: rgba(248,113,113,0.15); color: #fca5a5;
     }
 
     /* ---------- Misc ---------- */
     #MainMenu, footer { visibility: hidden; }
-    .app-footer {
-        text-align: center;
-        color: rgba(255,255,255,0.3);
-        font-size: 0.78rem;
-        padding: 2rem 0 0.5rem 0;
-    }
+    .app-footer { text-align: center; color: rgba(255,255,255,0.3); font-size: 0.78rem; padding: 2rem 0 0.5rem 0; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -339,11 +330,7 @@ def render_score_bar(label_key: str, score: float, delay: float = 0.0):
 
 
 def call_backend(image_bytes, filename, content_type, caption_text: str):
-    """image_bytes may be None (text-only request). caption_text may be
-    empty string (image-only request). At least one must be non-empty --
-    enforced by the UI before this is ever called."""
     data = {"caption": caption_text} if caption_text else {}
-
     if image_bytes is not None:
         files = {"file": (filename, image_bytes, content_type)}
         return requests.post(API_URL, files=files, data=data, timeout=60)
@@ -351,8 +338,147 @@ def call_backend(image_bytes, filename, content_type, caption_text: str):
         return requests.post(API_URL, data=data, timeout=60)
 
 
+def fetch_history():
+    try:
+        resp = requests.get(HISTORY_URL, timeout=15)
+        if resp.status_code == 200:
+            return resp.json().get("rows", [])
+    except requests.exceptions.RequestException:
+        pass
+    return None
+
+
+def row_is_flagged(row: dict) -> bool:
+    return any(str(row.get(label, "")).lower() == "true" for label in LABEL_ORDER)
+
+
+def style_bool_cell(val):
+    s = str(val).lower()
+    if s == "true":
+        return "background-color: rgba(248,113,113,0.22); color:#fca5a5; font-weight:700;"
+    if s == "false":
+        return "background-color: rgba(74,222,128,0.10); color:#86efac;"
+    return ""
+
+
+@st.dialog("📚 Full Prediction Database", width="large")
+def show_full_database():
+    rows = st.session_state.get("history_rows") or []
+    if not rows:
+        st.info("No predictions logged yet.")
+        return
+
+    df = pd.DataFrame(rows)
+    ordered_cols = [c for c in ["timestamp", "source"] if c in df.columns] + [
+        c for c in LABEL_ORDER if c in df.columns
+    ]
+    df = df[ordered_cols]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total logged", len(df))
+    flagged_mask = df[LABEL_ORDER].apply(lambda col: col.astype(str).str.lower() == "true").any(axis=1)
+    col2.metric("Flagged", int(flagged_mask.sum()))
+    col3.metric("Flag rate", f"{(flagged_mask.mean() * 100):.0f}%" if len(df) else "0%")
+
+    source_filter = st.multiselect(
+        "Filter by source", options=sorted(df["source"].unique()) if "source" in df.columns else [],
+        default=None, placeholder="All sources",
+    )
+    show_flagged_only = st.checkbox("Show flagged only")
+
+    view = df.copy()
+    if source_filter:
+        view = view[view["source"].isin(source_filter)]
+    if show_flagged_only:
+        view = view[flagged_mask.reindex(view.index)]
+
+    view = view.iloc[::-1]  # most recent first
+
+    styled = view.style.map(style_bool_cell, subset=[c for c in LABEL_ORDER if c in view.columns])
+    st.dataframe(styled, width='stretch', height=560)
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download full CSV", csv_bytes, "toxic_database_export.csv", "text/csv")
+
+
 # ============================================================
-# UI
+# SIDEBAR — prediction log viewer
+# ============================================================
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">🗂️ Prediction Log</div>', unsafe_allow_html=True)
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("🔄 Refresh", width='stretch'):
+            st.session_state["history_rows"] = fetch_history()
+    with col_b:
+        if st.button("⛶ Full view", width='stretch'):
+            show_full_database()
+
+    if "history_rows" not in st.session_state:
+        st.session_state["history_rows"] = fetch_history()
+
+    rows = st.session_state.get("history_rows")
+
+    if rows is None:
+        st.warning("Can't reach the backend to load history.")
+    elif not rows:
+        st.info("No predictions logged yet — run a classification to populate this.")
+    else:
+        total = len(rows)
+        flagged = sum(1 for r in rows if row_is_flagged(r))
+        safe = total - flagged
+        rate = (flagged / total * 100) if total else 0.0
+
+        st.markdown(
+            f"""
+            <div class="metric-grid">
+                <div class="metric-card metric-total"><div class="metric-value">{total}</div><div class="metric-label">Total</div></div>
+                <div class="metric-card metric-flagged"><div class="metric-value">{flagged}</div><div class="metric-label">Flagged</div></div>
+                <div class="metric-card metric-safe"><div class="metric-value">{safe}</div><div class="metric-label">Safe</div></div>
+                <div class="metric-card metric-rate"><div class="metric-value">{rate:.0f}%</div><div class="metric-label">Flag rate</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Source breakdown as a tiny bar chart
+        try:
+            df = pd.DataFrame(rows)
+            if "source" in df.columns:
+                st.caption("By source")
+                st.bar_chart(df["source"].value_counts())
+        except Exception:
+            pass
+
+        st.caption(f"Most recent {min(25, total)} predictions")
+
+        for row in reversed(rows[-25:]):
+            flagged_row = row_is_flagged(row)
+            css_class = "log-row-flagged" if flagged_row else "log-row-safe"
+            ts = row.get("timestamp", "")[:19].replace("T", " ")
+            src = row.get("source", "?")
+            src_icon = SOURCE_ICON.get(src, "")
+
+            tags = "".join(
+                f'<span class="log-tag">{LABEL_ICON.get(l, "")} {LABEL_DISPLAY[l]}</span>'
+                for l in LABEL_ORDER if str(row.get(l, "")).lower() == "true"
+            )
+            tags_html = f'<div class="log-tags">{tags}</div>' if tags else ""
+            status_icon = "🚨" if flagged_row else "✅"
+
+            st.markdown(
+                f"""
+                <div class="log-row {css_class}">
+                    <div>{status_icon} {src_icon} <span class="log-time">{ts}</span></div>
+                    {tags_html}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+# ============================================================
+# MAIN — classifier UI
 # ============================================================
 st.markdown(
     """
@@ -424,18 +550,15 @@ if analyze_clicked:
     description = data.get("description", "")
     fused_scores = data.get("toxicity_scores", {}) or {}
     raw_clip_scores = data.get("raw_clip_scores", {}) or {}
-    raw_bert_scores = data.get("raw_bert_scores")  # may be None on partial_failure
+    raw_bert_scores = data.get("raw_bert_scores")
+
+    # New prediction landed -- refresh the sidebar log on next render
+    st.session_state["history_rows"] = fetch_history()
 
     st.divider()
 
-    # --------------------------------------------------
-    # Caption / analyzed text
-    # --------------------------------------------------
     st.markdown(f'<div class="caption-box">📄 {description}</div>', unsafe_allow_html=True)
 
-    # --------------------------------------------------
-    # Partial failure banner — caption generation failed upstream
-    # --------------------------------------------------
     if status == "partial_failure":
         st.warning(
             "⚠️ Caption generation failed for this image — the verdict below is based on "
@@ -443,13 +566,7 @@ if analyze_clicked:
             "lower-confidence than a normal result."
         )
 
-    # --------------------------------------------------
-    # SINGLE SOURCE OF TRUTH: one flagging decision, everything else displays it
-    # --------------------------------------------------
-    triggered_categories = [
-        cat for cat in LABEL_ORDER
-        if fused_scores.get(cat, 0.0) >= VIOLATION_THRESHOLD
-    ]
+    triggered_categories = [cat for cat in LABEL_ORDER if fused_scores.get(cat, 0.0) >= VIOLATION_THRESHOLD]
     is_flagged = bool(triggered_categories)
 
     if is_flagged:
@@ -477,7 +594,6 @@ if analyze_clicked:
             unsafe_allow_html=True,
         )
 
-    # Supporting evidence line — informational only, does not make its own verdict
     has_clip_signal = raw_clip_scores and any(v is not None for v in raw_clip_scores.values())
     if has_clip_signal:
         top_clip_label = max(raw_clip_scores, key=lambda k: raw_clip_scores[k] or 0.0)
@@ -493,9 +609,6 @@ if analyze_clicked:
             unsafe_allow_html=True,
         )
 
-    # --------------------------------------------------
-    # Score breakdown
-    # --------------------------------------------------
     with st.expander("📊 Full probability breakdown", expanded=is_flagged):
         st.markdown("**Fused multi-modal scores**")
         for i, label in enumerate(LABEL_ORDER):

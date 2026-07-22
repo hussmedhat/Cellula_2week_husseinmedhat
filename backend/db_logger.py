@@ -8,29 +8,20 @@ CSV_PATH = os.path.join("database", "toxic_database.csv")
 # Keep this in sync with LABELS in main.py
 LABELS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
-FIELDNAMES = (
-    ["timestamp", "description"]
-    + [f"bert_{label}" for label in LABELS]
-    + [f"clip_{label}" for label in LABELS]
-    + [f"fused_{label}" for label in LABELS]
-    + ["status"]
-)
+FIELDNAMES = ["timestamp", "source"] + LABELS
 
 # Concurrent requests run this in different threads (via asyncio.to_thread),
 # so guard the append with a lock to avoid two writes interleaving mid-row.
 _lock = threading.Lock()
 
 
-def log_prediction(description, bert_scores, clip_scores, fused_scores, status="success"):
+def log_prediction(source: str, flags: dict):
     row = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "description": description,
-        "status": status,
+        "source": source,
     }
     for label in LABELS:
-        row[f"bert_{label}"] = bert_scores.get(label) if bert_scores else None
-        row[f"clip_{label}"] = clip_scores.get(label) if clip_scores else None
-        row[f"fused_{label}"] = fused_scores.get(label) if fused_scores else None
+        row[label] = bool(flags.get(label, False))
 
     with _lock:
         os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)

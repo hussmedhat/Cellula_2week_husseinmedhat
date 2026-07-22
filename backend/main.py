@@ -10,7 +10,7 @@ from transformers import BertTokenizer
 from model_arch import BertBiLSTM
 from imagecaption import caption_engine
 from image_classifier import get_clip_scores
-from db_logger import log_prediction
+from db_logger import log_prediction, read_all_predictions
 
 app = FastAPI(title="Toxicity Classification API")
 
@@ -51,6 +51,9 @@ CLIP_CONFIDENCE_THRESHOLD = 0.75  # CLIP score needs to clear this to be "confid
 HIGH_CONF_CLIP_WEIGHT = 0.6       # weight CLIP gets on that label when confident
 
 
+VIOLATION_THRESHOLD = 0.35
+
+
 def empty_clip_dict():
     return {label: None for label in LABELS}
 
@@ -69,6 +72,9 @@ async def predict(
 
     if has_image and not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image.")
+
+    # what the request was built from -- logged to the CSV alongside the flags
+    source = "both" if (has_image and has_text) else ("image" if has_image else "caption")
 
     try:
         image_bytes = await file.read() if has_image else None
@@ -93,9 +99,10 @@ async def predict(
                     # ya2ema partial failure ya2ema howa el user mada5alsh ay text fa lazem n3ml scoring 3ala el clip scores bas
                     bert_scores = empty_clip_dict()
                     fused_scores = clip_scores
-                    await asyncio.to_thread(
-                        log_prediction, "failed to generate caption", bert_scores, clip_scores, fused_scores, "partial_failure"
-                    )
+
+                    flags = {label: (fused_scores[label] or 0.0) >= VIOLATION_THRESHOLD for label in LABELS}
+                    await asyncio.to_thread(log_prediction, source, flags)
+
                     return {
                         "status": "partial_failure",
                         "description": "failed to generate caption",
@@ -105,11 +112,7 @@ async def predict(
                         "warning": "Caption generation failed; scores are CLIP-only.",
                     }
 
-        # ---------------------------------------------------------
-        # Build the text BERT will actually score. By this point we're
-        # guaranteed to have SOMETHING: either user text, a generated
-        # caption, or both.
-        # ---------------------------------------------------------
+
         if has_text and generated_caption:
             description = f"{user_text}. {generated_caption}"
         elif has_text:
@@ -152,9 +155,8 @@ async def predict(
 
         response_clip_scores = clip_scores if clip_scores is not None else empty_clip_dict()
 
-        await asyncio.to_thread(
-            log_prediction, description, bert_scores, response_clip_scores, fused_scores, "success"
-        )
+        flags = {label: fused_scores[label] >= VIOLATION_THRESHOLD for label in LABELS}
+        await asyncio.to_thread(log_prediction, source, flags)
 
         return {
             "status": "success",
@@ -169,3 +171,11 @@ async def predict(
     except Exception as e:
         print(f"DEBUG: Error in prediction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history")
+async def history():
+    """Returns every logged prediction: timestamp, source, and the
+    per-label boolean flags. Powers the sidebar log viewer in app.py."""
+    rows = await asyncio.to_thread(read_all_predictions)
+    return {"rows": rows}
